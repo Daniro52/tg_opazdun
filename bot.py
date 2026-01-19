@@ -96,7 +96,16 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     wake = leave - timedelta(minutes=total_minutes)
     scenario_name = next(name for sid,name in get_scenarios(user_id) if sid==scenario_id)
 
-    msg = f"📂 Сценарий: {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}"
+    # Формируем план дел
+    plan_msg = ""
+    current_time = wake
+    for _, name, minutes in tasks:
+        end_time = current_time + timedelta(minutes=minutes)
+        plan_msg += f"{current_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} {name} ({minutes} мин)\n"
+        current_time = end_time
+    plan_msg += f"{current_time.strftime('%H:%M')} - {leave.strftime('%H:%M')} Дорога ({road_minutes} мин)"
+
+    msg = f"📂 Сценарий: {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}\n\nПлан дел:\n{plan_msg}"
     await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=main_menu)
 
 # --- Бот ---
@@ -149,7 +158,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Сценарий создан! Добавь дело: пример 'Завтрак 15' или 'Тренировка 1.5'"
         )
-        # --- показываем отдельное меню для добавления дела ---
         await update.message.reply_text(
             "Чтобы выйти из режима добавления дел, нажми ↩️ Назад",
             reply_markup=ReplyKeyboardMarkup([["↩️ Назад"]], resize_keyboard=True)
@@ -215,12 +223,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not scenarios:
             await update.message.reply_text("Нет сценариев.")
             return
-        # --- только реальные сценарии + кнопка назад ---
         keyboard = [[name] for _, name in scenarios if name != "📂 Мои сценарии"]
         keyboard.append(["↩️ Назад"])
         await update.message.reply_text(
             "Выбери сценарий для управления:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
         user_state[user_id] = "select_scenario_for_edit"
         return
@@ -327,7 +334,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not scenarios:
             await update.message.reply_text("Сначала создай сценарий")
             return
-        keyboard=[[name] for _,name in scenarios if name != "📂 Мои сценарии"]
+        keyboard=[[name] for _,name in scenarios if name != "📂 Мои сценарии" ]
         keyboard.append(["↩️ Назад"])
         await update.message.reply_text("Выбери сценарий:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         user_state[user_id]="choosing_scenario"
@@ -355,29 +362,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("Формат: 9:50 или 09:50")
         return
+
+    # --- Блок дороги с подробным планом ---
     if state=="waiting_road":
         try:
             road_val=float(text.replace(",","."))  
-            if road_val<6: road_minutes=int(road_val*60)
-            else: road_minutes=int(road_val)
+            if road_val<6: 
+                road_minutes=int(road_val*60)
+            else: 
+                road_minutes=int(road_val)
         except:
             await update.message.reply_text("Введи число минут или часов")
             return
 
         scenario_id=user_data[user_id]["scenario_id"]
         tasks=get_tasks(scenario_id)
-        total_minutes=sum(m for _,_,m in tasks)
+        total_task_minutes=sum(m for _,_,m in tasks)
         target=user_data[user_id]["target_time"]
+
+        # Время выхода и просыпания
         leave=target-timedelta(minutes=road_minutes)
-        wake=leave-timedelta(minutes=total_minutes)
+        wake=leave-timedelta(minutes=total_task_minutes)
 
         scenario_name=next(name for sid,name in get_scenarios(user_id) if sid==scenario_id)
+
+        # --- Формируем подробный план ---
+        plan_msg = ""
+        current_time = wake
+        for _, name, minutes in tasks:
+            end_time = current_time + timedelta(minutes=minutes)
+            plan_msg += f"{current_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} {name} ({minutes} мин)\n"
+            current_time = end_time
+        plan_msg += f"{current_time.strftime('%H:%M')} - {leave.strftime('%H:%M')} Дорога ({road_minutes} мин)"
+
         await update.message.reply_text(
-            f"📂 {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}",
+            f"📂 {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}\n\nПлан дел:\n{plan_msg}",
             reply_markup=main_menu
         )
 
-        # --- JobQueue ---
+        # --- Ставим JobQueue ---
         job_context = {"user_id":user_id, "scenario_id":scenario_id, "target_time":target, "road_minutes":road_minutes}
         old_jobs = context.application.job_queue.get_jobs_by_name(str(user_id))
         for j in old_jobs: j.schedule_removal()
