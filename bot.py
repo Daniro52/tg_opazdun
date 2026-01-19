@@ -126,11 +126,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user_id)
     state = user_state.get(user_id)
 
-    # --- Кнопка назад для редактирования/удаления дел ---
+    # --- Кнопка назад ---
     if state in ["select_task_to_edit", "select_task_to_delete"] and text=="↩️ Назад":
         scenario_id = user_data[user_id]["scenario_id"]
         user_state[user_id] = "scenario_action"
         await show_scenario_menu(update, scenario_id)
+        return
+    if state == "scenario_action" and text=="↩️ Назад":
+        user_state[user_id]=None
+        await update.message.reply_text("Возврат в главное меню", reply_markup=main_menu)
         return
 
     # --- Создание сценария ---
@@ -138,42 +142,97 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id]="creating_scenario"
         await update.message.reply_text("Введи название сценария (пример: Утро на работу)")
         return
-
     if state=="creating_scenario":
         scenario_id = add_scenario(user_id, text)
         user_data[user_id]={"scenario_id":scenario_id}
         user_state[user_id]="adding_task"
-        await update.message.reply_text("Сценарий создан! Добавь дело: пример 'Завтрак 15' или 'Тренировка 1.5'")
+        await update.message.reply_text(
+            "Сценарий создан! Добавь дело: пример 'Завтрак 15' или 'Тренировка 1.5'"
+        )
+        # --- показываем отдельное меню для добавления дела ---
+        await update.message.reply_text(
+            "Чтобы выйти из режима добавления дел, нажми ↩️ Назад",
+            reply_markup=ReplyKeyboardMarkup([["↩️ Назад"]], resize_keyboard=True)
+        )
         return
 
-    # --- Добавление дела ---
-    if state=="adding_task" and text not in ["➕ Создать сценарий","📂 Мои сценарии","🕒 Рассчитать время"]:
+    # --- Добавление дела с отдельным меню ---
+    if state=="adding_task":
+        keyboard = [["↩️ Назад"]]
+        if text=="↩️ Назад":
+            user_state[user_id]=None
+            await update.message.reply_text("Выход из режима добавления дел", reply_markup=main_menu)
+            return
         try:
             name,val=text.rsplit(" ",1)
             minutes=float(val.replace(",","."))
             if minutes<5: minutes=int(minutes*60)
             else: minutes=int(minutes)
             add_task(user_data[user_id]["scenario_id"], name, minutes)
-            await update.message.reply_text(f"✅ Добавлено: {name} ({minutes} мин)\nДобавь ещё дело или выбери пункт меню.")
+            await update.message.reply_text(
+                f"✅ Добавлено: {name} ({minutes} мин)\n"
+                "Чтобы добавить ещё дело, введи его в формате 'Название 15' или 'Тренировка 1.5'.\n"
+                "Если хочешь выйти — нажми ↩️ Назад.",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            )
         except:
-            await update.message.reply_text("Ошибка. Формат: Название 15 (минут) или 1.5 (часа)")
+            await update.message.reply_text(
+                "Ошибка. Формат: Название 15 (минут) или 1.5 (часа)\n"
+                "Чтобы выйти — нажми ↩️ Назад.",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            )
+        return
+
+    # --- Редактирование названия сценария ---
+    if state == "editing_scenario_name":
+        scenario_id = user_data[user_id]["scenario_id"]
+        update_scenario_name(scenario_id, text)
+        user_state[user_id] = "scenario_action"
+        await update.message.reply_text(f"Название сценария обновлено на: {text}")
+        await show_scenario_menu(update, scenario_id)
+        return
+
+    # --- Редактирование дела ---
+    if state == "editing_task":
+        try:
+            task_id = user_data[user_id]["task_id"]
+            name, val = text.rsplit(" ", 1)
+            minutes = float(val.replace(",", "."))
+            if minutes < 5: minutes = int(minutes*60)
+            else: minutes = int(minutes)
+            update_task(task_id, name, int(minutes))
+            user_state[user_id] = "scenario_action"
+            await update.message.reply_text(f"Дело обновлено: {name} ({minutes} мин)")
+            scenario_id = user_data[user_id]["scenario_id"]
+            await show_scenario_menu(update, scenario_id)
+        except:
+            await update.message.reply_text("Ошибка формата. Пример: Завтрак 15 или Тренировка 1.5")
         return
 
     # --- Мои сценарии ---
     if text=="📂 Мои сценарии":
-        scenarios=get_scenarios(user_id)
+        scenarios = get_scenarios(user_id)
         if not scenarios:
             await update.message.reply_text("Нет сценариев.")
             return
-        keyboard=[[name] for _,name in scenarios]
-        await update.message.reply_text("Выбери сценарий для управления:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-        user_state[user_id]="select_scenario_for_edit"
+        # --- только реальные сценарии + кнопка назад ---
+        keyboard = [[name] for _, name in scenarios if name != "📂 Мои сценарии"]
+        keyboard.append(["↩️ Назад"])
+        await update.message.reply_text(
+            "Выбери сценарий для управления:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        )
+        user_state[user_id] = "select_scenario_for_edit"
         return
 
     if state=="select_scenario_for_edit":
         scenarios=get_scenarios(user_id)
         selected=next((sid for sid,name in scenarios if name==text),None)
         if not selected:
+            if text=="↩️ Назад":
+                user_state[user_id]=None
+                await update.message.reply_text("Возврат в главное меню", reply_markup=main_menu)
+                return
             await update.message.reply_text("Выбери сценарий кнопкой")
             return
         user_data[user_id]={"scenario_id":selected}
@@ -184,11 +243,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Действия со сценарием ---
     if state=="scenario_action":
         scenario_id=user_data[user_id]["scenario_id"]
-        if text=="↩️ Назад":
-            user_state[user_id]=None
-            await update.message.reply_text("Возврат в главное меню", reply_markup=main_menu)
-            return
-        elif text=="🗑 Удалить сценарий":
+        if text=="🗑 Удалить сценарий":
             delete_scenario(scenario_id)
             user_state[user_id]=None
             await update.message.reply_text("Сценарий удалён", reply_markup=main_menu)
@@ -200,16 +255,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text=="📝 Добавить дело":
             user_state[user_id]="adding_task"
             await update.message.reply_text("Добавь новое дело: пример 'Завтрак 15'")
+            await update.message.reply_text(
+                "Чтобы выйти из режима добавления дел, нажми ↩️ Назад",
+                reply_markup=ReplyKeyboardMarkup([["↩️ Назад"]], resize_keyboard=True)
+            )
             return
         elif text=="✏️ Редактировать дело":
             tasks=get_tasks(scenario_id)
             if not tasks:
                 await update.message.reply_text("Нет дел для редактирования")
                 return
-            # ---- исправленная нумерация с 1 ----
-            keyboard = []
-            for idx, (_, name, minutes) in enumerate(tasks):
-                keyboard.append([f"{idx+1}: {name} ({minutes} мин)"])
+            keyboard = [[f"{idx+1}: {name} ({minutes} мин)"] for idx,(_,name,minutes) in enumerate(tasks)]
             keyboard.append(["↩️ Назад"])
             await update.message.reply_text("Выбери дело для редактирования:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
             user_state[user_id]="select_task_to_edit"
@@ -219,9 +275,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not tasks:
                 await update.message.reply_text("Нет дел для удаления")
                 return
-            keyboard = []
-            for idx, (_, name, minutes) in enumerate(tasks):
-                keyboard.append([f"{idx+1}: {name} ({minutes} мин)"])
+            keyboard = [[f"{idx+1}: {name} ({minutes} мин)"] for idx,(_,name,minutes) in enumerate(tasks)]
             keyboard.append(["↩️ Назад"])
             await update.message.reply_text("Выбери дело для удаления:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
             user_state[user_id]="select_task_to_delete"
@@ -273,22 +327,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not scenarios:
             await update.message.reply_text("Сначала создай сценарий")
             return
-        keyboard=[[name] for _,name in scenarios]
+        keyboard=[[name] for _,name in scenarios if name != "📂 Мои сценарии"]
+        keyboard.append(["↩️ Назад"])
         await update.message.reply_text("Выбери сценарий:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         user_state[user_id]="choosing_scenario"
         return
-
     if state=="choosing_scenario":
         scenarios=get_scenarios(user_id)
         selected=next((sid for sid,name in scenarios if name==text),None)
         if not selected:
+            if text=="↩️ Назад":
+                user_state[user_id]=None
+                await update.message.reply_text("Возврат в главное меню", reply_markup=main_menu)
+                return
             await update.message.reply_text("Выбери кнопкой")
             return
         user_data[user_id]={"scenario_id":selected}
         user_state[user_id]="waiting_target_time"
         await update.message.reply_text("К какому времени нужно быть? (пример: 9:50)")
         return
-
     if state=="waiting_target_time":
         try:
             target_time=datetime.strptime(text,"%H:%M")
@@ -298,11 +355,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("Формат: 9:50 или 09:50")
         return
-
-    # --- Блок дороги с выводом результата сразу ---
     if state=="waiting_road":
         try:
-            road_val=float(text.replace(",","."))
+            road_val=float(text.replace(",","."))  
             if road_val<6: road_minutes=int(road_val*60)
             else: road_minutes=int(road_val)
         except:
@@ -316,18 +371,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         leave=target-timedelta(minutes=road_minutes)
         wake=leave-timedelta(minutes=total_minutes)
 
-        # --- Сразу показываем пользователю ---
         scenario_name=next(name for sid,name in get_scenarios(user_id) if sid==scenario_id)
         await update.message.reply_text(
             f"📂 {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}",
             reply_markup=main_menu
         )
 
-        # --- Ставим JobQueue ---
+        # --- JobQueue ---
         job_context = {"user_id":user_id, "scenario_id":scenario_id, "target_time":target, "road_minutes":road_minutes}
         old_jobs = context.application.job_queue.get_jobs_by_name(str(user_id))
         for j in old_jobs: j.schedule_removal()
-
         context.application.job_queue.run_daily(
             send_reminder,
             time=target.time(),
