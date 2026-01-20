@@ -96,17 +96,21 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     wake = leave - timedelta(minutes=total_minutes)
     scenario_name = next(name for sid,name in get_scenarios(user_id) if sid==scenario_id)
 
-    # Формируем план дел
-    plan_msg = ""
-    current_time = wake
-    for _, name, minutes in tasks:
-        end_time = current_time + timedelta(minutes=minutes)
-        plan_msg += f"{current_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} {name} ({minutes} мин)\n"
-        current_time = end_time
-    plan_msg += f"{current_time.strftime('%H:%M')} - {leave.strftime('%H:%M')} Дорога ({road_minutes} мин)"
+    if state=="waiting_road":
+    # вычисляем road_minutes и leave/wake
+        plan_msg = ""
+        current_time = wake
+        for _, name, minutes in tasks:
+            end_time = current_time + timedelta(minutes=minutes)
+            plan_msg += f"{current_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} {name} ({minutes} мин)\n"
+            current_time = end_time
 
-    msg = f"📂 Сценарий: {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}\n\nПлан дел:\n{plan_msg}"
-    await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=main_menu)
+    # Дорога: с выхода до target_time
+        plan_msg += f"{leave.strftime('%H:%M')} - {target.strftime('%H:%M')} Дорога ({road_minutes} мин)"
+
+        msg = f"📂 Сценарий: {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}\n\nПлан дел:\n{plan_msg}"
+        await update.message.reply_text(msg, reply_markup=main_menu)
+
 
 # --- Бот ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -367,7 +371,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state=="waiting_road":
         try:
             road_val=float(text.replace(",","."))  
-            if road_val<6: 
+            if road_val<5: 
                 road_minutes=int(road_val*60)
             else: 
                 road_minutes=int(road_val)
@@ -393,7 +397,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             end_time = current_time + timedelta(minutes=minutes)
             plan_msg += f"{current_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} {name} ({minutes} мин)\n"
             current_time = end_time
-        plan_msg += f"{current_time.strftime('%H:%M')} - {leave.strftime('%H:%M')} Дорога ({road_minutes} мин)"
+        plan_msg += f"{leave.strftime('%H:%M')} - {target.strftime('%H:%M')} Дорога ({road_minutes} мин)"
 
         await update.message.reply_text(
             f"📂 {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}\n\nПлан дел:\n{plan_msg}",
