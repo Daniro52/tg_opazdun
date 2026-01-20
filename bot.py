@@ -83,34 +83,40 @@ def update_task(task_id, new_name, new_minutes):
     cursor.execute("UPDATE tasks SET name=?, minutes=? WHERE id=?", (new_name,new_minutes,task_id))
     conn.commit()
 
-# --- Напоминание ---
-async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    user_id = context.job.data['user_id']
-    scenario_id = context.job.data['scenario_id']
+# --- Напоминание о плане ---
+async def send_plan_reminder(context: ContextTypes.DEFAULT_TYPE):
+    print(f"[{datetime.now()}] Sending plan reminder to user {context.job.data['user_id']}")
+    job_data = context.job.data
+    user_id = job_data['user_id']
+    scenario_id = job_data['scenario_id']
+    target_time = job_data['target_time']
+    road_minutes = job_data['road_minutes']
+
     tasks = get_tasks(scenario_id)
     total_minutes = sum(m for _,_,m in tasks)
-    target_time = context.job.data['target_time']
-    road_minutes = context.job.data['road_minutes']
-
     leave = target_time - timedelta(minutes=road_minutes)
     wake = leave - timedelta(minutes=total_minutes)
     scenario_name = next(name for sid,name in get_scenarios(user_id) if sid==scenario_id)
 
-    if state=="waiting_road":
-    # вычисляем road_minutes и leave/wake
-        plan_msg = ""
-        current_time = wake
-        for _, name, minutes in tasks:
-            end_time = current_time + timedelta(minutes=minutes)
-            plan_msg += f"{current_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} {name} ({minutes} мин)\n"
-            current_time = end_time
+    plan_msg = ""
+    current_time = wake
+    for _, name, minutes in tasks:
+        end_time = current_time + timedelta(minutes=minutes)
+        plan_msg += f"{current_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} {name} ({minutes} мин)\n"
+        current_time = end_time
 
-    # Дорога: с выхода до target_time
-        plan_msg += f"{leave.strftime('%H:%M')} - {target.strftime('%H:%M')} Дорога ({road_minutes} мин)"
+    plan_msg += f"{leave.strftime('%H:%M')} - {target_time.strftime('%H:%M')} Дорога ({road_minutes} мин)"
 
-        msg = f"📂 Сценарий: {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}\n\nПлан дел:\n{plan_msg}"
-        await update.message.reply_text(msg, reply_markup=main_menu)
+    msg = f"📂 Сценарий: {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}\n\nПлан дел:\n{plan_msg}"
+    await context.bot.send_message(chat_id=user_id, text=msg)
 
+# --- Напоминание о конкретном деле ---
+async def send_task_reminder(context: ContextTypes.DEFAULT_TYPE):
+    print(f"[{datetime.now()}] Sending task reminder to user {context.job.data['user_id']}: {context.job.data['message']}")
+    job_data = context.job.data
+    user_id = job_data['user_id']
+    message = job_data['message']
+    await context.bot.send_message(chat_id=user_id, text=message)
 
 # --- Бот ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -359,15 +365,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if state=="waiting_target_time":
         try:
-            target_time=datetime.strptime(text,"%H:%M")
-            user_data[user_id]["target_time"]=target_time
+            target_time_obj=datetime.strptime(text,"%H:%M").time()
+            target_dt = datetime.combine(datetime.now().date(), target_time_obj)
+            if target_dt < datetime.now():
+                target_dt += timedelta(days=1)
+            user_data[user_id]["target_time"]=target_dt
             user_state[user_id]="waiting_road"
             await update.message.reply_text("Сколько минут занимает дорога? Можно в часах 0.5")
         except:
             await update.message.reply_text("Формат: 9:50 или 09:50")
         return
 
-    # --- Блок дороги с подробным планом ---
     if state=="waiting_road":
         try:
             road_val=float(text.replace(",","."))  
@@ -375,18 +383,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 road_minutes=int(road_val*60)
             else: 
                 road_minutes=int(road_val)
+            user_data[user_id]["road_minutes"]=road_minutes
+            user_state[user_id]="ask_reminders"
+            await update.message.reply_text("Хотите получать напоминания о каждом деле?",
+                                             reply_markup=ReplyKeyboardMarkup([["Да✅", "Нет❌"]], resize_keyboard=True))
         except:
             await update.message.reply_text("Введи число минут или часов")
-            return
+        return
 
+    if state=="ask_reminders":
         scenario_id=user_data[user_id]["scenario_id"]
+        target=user_data[user_id]["target_time"]
+        road_minutes=user_data[user_id]["road_minutes"]
         tasks=get_tasks(scenario_id)
         total_task_minutes=sum(m for _,_,m in tasks)
-        target=user_data[user_id]["target_time"]
-
+        
         # Время выхода и просыпания
         leave=target-timedelta(minutes=road_minutes)
         wake=leave-timedelta(minutes=total_task_minutes)
+
+        # Если wake в прошлом, сдвигаем на следующий день
+        now = datetime.now()
+        if wake < now:
+            wake += timedelta(days=1)
+            leave += timedelta(days=1)
+            target += timedelta(days=1)
 
         scenario_name=next(name for sid,name in get_scenarios(user_id) if sid==scenario_id)
 
@@ -399,21 +420,71 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_time = end_time
         plan_msg += f"{leave.strftime('%H:%M')} - {target.strftime('%H:%M')} Дорога ({road_minutes} мин)"
 
+        # Если сдвинуто на следующий день, добавляем уведомление
+        shift_msg = " (завтра)" if wake.date() > now.date() else ""
+
         await update.message.reply_text(
-            f"📂 {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}\n🚪 Выйти: {leave.strftime('%H:%M')}\n\nПлан дел:\n{plan_msg}",
+            f"📂 {scenario_name}\n🛏 Проснуться: {wake.strftime('%H:%M')}{shift_msg}\n🚪 Выйти: {leave.strftime('%H:%M')}{shift_msg}\n\nПлан дел:\n{plan_msg}",
             reply_markup=main_menu
         )
 
-        # --- Ставим JobQueue ---
+        # --- Удаляем старые jobs ---
+        old_jobs = context.application.job_queue.jobs()
+        for j in old_jobs:
+            if j.name and j.name.startswith(str(user_id)):
+                j.schedule_removal()
+
+        # --- Устанавливаем напоминание о плане в wake time (одноразовое) ---
         job_context = {"user_id":user_id, "scenario_id":scenario_id, "target_time":target, "road_minutes":road_minutes}
-        old_jobs = context.application.job_queue.get_jobs_by_name(str(user_id))
-        for j in old_jobs: j.schedule_removal()
-        context.application.job_queue.run_daily(
-            send_reminder,
-            time=target.time(),
-            context=job_context,
-            name=str(user_id)
+        seconds_to_wake = (wake - datetime.now()).total_seconds()
+        job = context.application.job_queue.run_once(
+            send_plan_reminder,
+            when=seconds_to_wake,
+            data=job_context,
+            name=str(user_id) + "_plan"
         )
+        print(f"[{datetime.now()}] Scheduled plan reminder for user {user_id} in {seconds_to_wake} seconds (at {wake})")
+
+        # --- Если да, устанавливаем напоминания о делах (одноразовые) ---
+        if text.lower() == "да✅":
+            # Напоминание о просыпании
+            job_context = {"user_id":user_id, "message": "Пора просыпаться!"}
+            job = context.application.job_queue.run_once(
+                send_task_reminder,
+                when=seconds_to_wake,
+                data=job_context,
+                name=str(user_id) + "_wake"
+            )
+            print(f"[{datetime.now()}] Scheduled wake reminder for user {user_id} in {seconds_to_wake} seconds (at {wake})")
+
+            # Напоминания о делах
+            current_time = wake
+            task_index = 0
+            for _, name, minutes in tasks:
+                seconds_to_current = (current_time - datetime.now()).total_seconds()
+                job_context = {"user_id":user_id, "message": f"Пора {name}!"}
+                job = context.application.job_queue.run_once(
+                    send_task_reminder,
+                    when=seconds_to_current,
+                    data=job_context,
+                    name=str(user_id) + f"_task{task_index}"
+                )
+                print(f"[{datetime.now()}] Scheduled task reminder '{name}' for user {user_id} in {seconds_to_current} seconds (at {current_time})")
+                current_time += timedelta(minutes=minutes)
+                task_index += 1
+
+            # Напоминание о выходе
+            seconds_to_leave = (leave - datetime.now()).total_seconds()
+            job_context = {"user_id":user_id, "message": "Пора выходить!"}
+            job = context.application.job_queue.run_once(
+                send_task_reminder,
+                when=seconds_to_leave,
+                data=job_context,
+                name=str(user_id) + "_leave"
+            )
+            print(f"[{datetime.now()}] Scheduled leave reminder for user {user_id} in {seconds_to_leave} seconds (at {leave})")
+
+            await update.message.reply_text("Напоминания установлены! Вы получите уведомления о каждом деле один раз.")
 
         user_state[user_id]=None
         user_data.pop(user_id,None)
