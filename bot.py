@@ -6,7 +6,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from telegram import Update
 from datetime import datetime, timedelta
 
-TOKEN = "8468917471:AAF62mZRqBAiFBAjFpoE_oMNndu49eCn2Yg"
+TOKEN = "8503560640:AAGbtTn_sIOoC5GWJpKmwD0IWmcNSFGX-GY"
 
 # --- База SQLite ---
 conn = sqlite3.connect("bot.db", check_same_thread=False)
